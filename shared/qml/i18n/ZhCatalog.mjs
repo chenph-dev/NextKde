@@ -639,6 +639,8 @@ export const catalog = {
     "New window": "新建窗口",
     "Unpin": "取消固定",
     "Pin this app": "固定此应用",
+    "Add separator to the right": "在右侧添加分隔线",
+    "Remove separator": "移除分隔线",
     "Open": "打开",
     "Close all windows": "关闭所有窗口",
 
@@ -898,6 +900,7 @@ export const catalog = {
     "Icon name or local path": "图标名称或本地路径",
     "Reset to default": "恢复默认",
     "Hide app": "隐藏应用",
+    "Hidden apps": "隐藏的应用",
     "Save": "保存",
 
     // quicksearch · 快速搜索

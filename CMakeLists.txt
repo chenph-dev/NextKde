@@ -310,6 +310,10 @@ if(BUILD_TESTING)
                 ${CMAKE_CURRENT_SOURCE_DIR}/shell/desktop/modules/stage/test_stage_groups.mjs
         )
         set_tests_properties(kos-shell.stage-groups PROPERTIES TIMEOUT 10)
+        add_test(NAME kos-shell.window-family
+            COMMAND ${KOS_NODE_EXECUTABLE} --test
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/window-family/model.test.mjs)
+        set_tests_properties(kos-shell.window-family PROPERTIES LABELS logic TIMEOUT 10)
         add_test(NAME kos-shell.stage-effects
             COMMAND ${KOS_NODE_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/shell/desktop/modules/stage/test_stage_effects.mjs)
@@ -328,8 +332,21 @@ if(BUILD_TESTING)
             set_tests_properties(kos-shell.weather-refresh PROPERTIES
                 LABELS "ui;headless" TIMEOUT 20
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/qml")
+            add_test(NAME kos-shell.widget-open
+                COMMAND ${KOS_WEATHER_PYTHON_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/widget-open/run.py
+                    ${KOS_QUICKSHELL_EXECUTABLE})
+            set_tests_properties(kos-shell.widget-open PROPERTIES
+                LABELS "ui;headless" TIMEOUT 60
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/qml")
         endif()
         if(KOS_QUICKSHELL_EXECUTABLE)
+            add_test(NAME kos-shell.window-family-runtime
+                COMMAND ${KOS_NODE_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/window-family/runtime.mjs
+                    ${KOS_QUICKSHELL_EXECUTABLE})
+            set_tests_properties(kos-shell.window-family-runtime PROPERTIES
+                LABELS "ui;headless" TIMEOUT 15)
             add_test(NAME kos-shell.dock-surface
                 COMMAND ${KOS_NODE_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/dock/runtime.mjs surface
