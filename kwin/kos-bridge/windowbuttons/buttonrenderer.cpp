@@ -247,8 +247,8 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
         m_menu.rect = QRectF();
     }
 
-    if (window->isFullScreen() || (!sourceCapture && !window->isVisible())) {
-        if (window->isFullScreen() && m_menu.window == window) {
+    if (window->isFullScreen()) {
+        if (m_menu.window == window) {
             closeTileMenu();
         }
         return;
@@ -257,8 +257,14 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
     // Screen-space animation pixels are not the titlebar at its resting
     // coordinates: sampling them can confirm the black backdrop during an
     // opening animation. Raw source captures still sample and carry the panel
-    // through the animation. Other paints publish neither a panel nor hits.
-    if (!transform.canSampleTitlebar()) return;
+    // through offscreen animations; 2D screen-space animations reuse an
+    // already confirmed tint without sampling or publishing input hits.
+    if (!sourceCapture && !transform.canPaintOverlay()) {
+        return;
+    }
+    const bool liveOnScreen = window->isVisible() && !window->isDeleted();
+    const bool canSample = sourceCapture || (liveOnScreen && transform.canSampleTitlebar());
+    const bool canPublishHits = !sourceCapture && liveOnScreen && transform.canSampleTitlebar();
 
     // KWin's own user interface is not an application window. The OSD the
     // desktop-change script draws, the outline, the tab switcher, the tile
@@ -286,8 +292,8 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
     if (!config.cooperativeControls && !window->hasDecoration()
         && (window->isDialog()
             || (window->window() && window->window()->isTransient())
-            || (window->window() && !window->window()->isResizable()
-                && !window->window()->isMaximizable()))) {
+            || (window->window() && (!window->window()->isResizable()
+                || !window->window()->isMaximizable())))) {
         return;
     }
 
@@ -390,7 +396,6 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
     const QRectF local = config.cooperativeControls ? config.cooperativeRect
         : geometry.independentBackground ? panelRectUnclipped(geometry, window->frameGeometry().size())
                                          : panelRect(geometry, window->frameGeometry().size());
-    const QSizeF panelSize = local.size();
     // Growing the cover into application content must not move the title-bar
     // sampling band down into that content.
     auto tintGeometry = geometry;
@@ -420,14 +425,28 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
                  + 19 * panelColor.blue()) >> 8) < 128;
         break;
     case PanelBackground::Auto: {
-        tintKnown = tintFor(renderTarget, viewport, window,
-                            tintPanel, local, deviceRegion, &dark, &panelColor);
-        auto cached = m_cache.find(window);
-        if (cached != m_cache.end()) {
-            const QRect gutter = visibleTitlebarGutter(renderTarget, viewport,
-                window->frameGeometry(), deviceRegion, tintPanel, local);
-            sameFrameTint = !gutter.isEmpty() && m_gpuTint.update(renderTarget, gutter);
-            cached->sameFrameTint = sameFrameTint;
+        const bool retiring = window->isMinimized() || window->isDeleted();
+        if (canSample) {
+            tintKnown = tintFor(renderTarget, viewport, window,
+                                tintPanel, local, deviceRegion, &dark, &panelColor);
+            auto cached = m_cache.find(window);
+            if (cached != m_cache.end()) {
+                if (retiring && tintKnown) {
+                    sameFrameTint = false;
+                } else {
+                    const QRect gutter = visibleTitlebarGutter(renderTarget, viewport,
+                        window->frameGeometry(), deviceRegion, tintPanel, local);
+                    sameFrameTint = !gutter.isEmpty() && m_gpuTint.update(renderTarget, gutter);
+                }
+                cached->sameFrameTint = sameFrameTint;
+            }
+        } else {
+            const auto cached = m_cache.constFind(window);
+            tintKnown = cached != m_cache.constEnd() && cached->known;
+            if (tintKnown) {
+                dark = cached->dark;
+                panelColor = cached->color;
+            }
         }
         if (!tintKnown && sameFrameTint) {
             // The shader hides both layers if the current gutter is unusable.
@@ -454,24 +473,45 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
     // leave input with the client rather than intercepting an invisible cover.
     const bool controlsReady = !sameFrameTint || tintKnown;
 
+    QRectF drawnLocal = local;
+    qreal confirmedBottom = -1;
+    if (!config.cooperativeControls && config.background == PanelBackground::Auto) {
+        const auto cached = m_cache.constFind(window);
+        if (cached != m_cache.constEnd()) {
+            confirmedBottom = cached->backgroundBottom;
+        }
+    }
+    const bool adjustingNow = m_adjusting.contains(window);
+    const OverlayMode overlayMode = adjustingNow
+        ? m_adjustOptions.value(window).mode
+        : config.overlayMode;
+    if (!adjustingNow && overlayMode == OverlayMode::Cover
+        && !geometry.independentBackground && confirmedBottom > 0
+        && drawnLocal.top() < confirmedBottom && drawnLocal.bottom() > confirmedBottom
+        && confirmedBottom >= drawnLocal.top() + effectiveButtonSize(geometry) + 2.0) {
+        drawnLocal.setBottom(confirmedBottom);
+    }
+    const QSizeF drawnPanelSize = drawnLocal.size();
+
     // Apply the window's animation transform: scale about the window's
     // top-left, then translate, matching what KWin does to the window itself.
     const QPointF origin = windowTopLeft
         + QPointF(transform.xTranslate, transform.yTranslate);
-    const QPointF localScaled(local.x() * transform.xScale,
-                              local.y() * transform.yScale);
-    const QSizeF sizeScaled(panelSize.width() * transform.xScale,
-                            panelSize.height() * transform.yScale);
+    const QPointF localScaled(drawnLocal.x() * transform.xScale,
+                              drawnLocal.y() * transform.yScale);
+    const QSizeF sizeScaled(drawnPanelSize.width() * transform.xScale,
+                            drawnPanelSize.height() * transform.yScale);
     const QRectF logicalRect(origin + localScaled, sizeScaled);
 
     // Remember the panel and the three dots in global logical coordinates so
     // the input filter can hit-test clicks against them. The dots come from
     // the same layout buildPanel() draws, so the two cannot drift apart.
-    const QPointF panelOrigin = windowTopLeft + local.topLeft();
+    const QPointF panelOrigin = windowTopLeft + drawnLocal.topLeft();
     HitRects hit;
     hit.cooperative = config.cooperativeControls;
+    hit.overlayMode = overlayMode;
     hit.windowOrigin = windowTopLeft;
-    hit.panelRect = QRectF(panelOrigin, panelSize);
+    hit.panelRect = QRectF(panelOrigin, drawnPanelSize);
     // The margin is part of the panel as far as the pointer is concerned --
     // see AppConfig::interceptMargin -- but it is not allowed outside the
     // window: a margin hanging over the edge would swallow clicks aimed at
@@ -484,7 +524,7 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
     for (int i = 0; i < TypeCount; ++i) {
         hit.dots[i] = config.cooperativeControls
             ? config.cooperativeButtons[i].translated(windowTopLeft)
-            : dotRect(panelSize, geometry, i).translated(panelOrigin);
+            : dotRect(drawnPanelSize, geometry, i).translated(panelOrigin);
         cluster = cluster.isEmpty() ? hit.dots[i] : cluster.united(hit.dots[i]);
     }
     hit.clusterRect = cluster.adjusted(-1.0, -1.0, 1.0, 1.0);
@@ -509,7 +549,7 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
     QRectF menuRect;
     QRectF menuLogical;
     KWin::Region menuClip;
-    if (m_menu.window == window && controlsReady) {
+    if (m_menu.window == window && controlsReady && canPublishHits) {
         const auto menu = tileMenuRect(hit.panelRect, window->frameGeometry(),
                                        hit.dots[zoomDotIndex()].center());
         m_menu.rect = menu.value_or(QRectF());
@@ -525,8 +565,36 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
             menuClip = clippedToWindow(deviceRegion, viewport, menuLogical);
         }
     }
+    QRectF adjustBarLogical;
+    KWin::Region adjustBarClip;
+    if (adjustingNow && !config.cooperativeControls && controlsReady) {
+        const AdjustOptions opts = m_adjustOptions.value(window);
+        const AdjustBarLayout layout = adjustBarLayout(
+            hit.panelRect, window->frameGeometry(),
+            opts.canToggleScope, opts.hasExistingRule);
+        m_adjustBar.window = window;
+        m_adjustBar.layout = layout;
+        m_adjustBar.state.mode = opts.mode;
+        m_adjustBar.state.scope = opts.scope;
+        m_adjustBar.state.canToggleScope = opts.canToggleScope;
+        m_adjustBar.state.hasRole = opts.hasRole;
+        m_adjustBar.state.hasExistingRule = opts.hasExistingRule;
+        m_adjustBar.state.dark = dark;
+        m_adjustBar.hasLayout = !layout.isEmpty();
+        if (!layout.isEmpty()) {
+            const QRectF barLocal = layout.rect.translated(-windowTopLeft);
+            adjustBarLogical = QRectF(
+                origin + QPointF(barLocal.x() * transform.xScale,
+                                 barLocal.y() * transform.yScale),
+                QSizeF(barLocal.width() * transform.xScale,
+                       barLocal.height() * transform.yScale));
+            adjustBarClip = clippedToWindow(deviceRegion, viewport, adjustBarLogical);
+        }
+    } else if (m_adjustBar.window == window) {
+        m_adjustBar = AdjustBarCache{};
+    }
     if (controlsReady) {
-        m_hits[window] = hit;
+        if (canPublishHits) m_hits[window] = hit;
         if (sourceCapture) m_sourceHits[window] = hit;
     }
 
@@ -559,15 +627,16 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
         ? clippedToWindow(deviceRegion, viewport, transformedFrame) : deviceRegion;
     const KWin::Region clip = clippedToWindow(panelRegion, viewport, paintBounds);
     if (!clip.isEmpty()) {
-        const bool active = (KWin::effects->activeWindow() == window);
+        const bool retiring = window->isMinimized() || window->isDeleted();
+        const bool active = !retiring && (KWin::effects->activeWindow() == window);
         // The hover ring is not drawn while the window is being adjusted: the
         // panel is being positioned, and a ring following the pointer across it
-        // says nothing about that.
-        const bool adjusting = m_adjusting.contains(window);
-        const Action hovered =
-            (!adjusting && m_hoverWindow == window) ? m_hovered : Action::None;
+        // says nothing about that. Minimizing/closing windows also drop hover.
+        const bool adjusting = !retiring && adjustingNow;
+        const bool interactiveHover = !retiring && !adjusting && m_hoverWindow == window;
+        const Action hovered = interactiveHover ? m_hovered : Action::None;
         const bool lightsHovered =
-            (!adjusting && m_hoverWindow == window && (m_hovered != Action::None || m_nearLights));
+            interactiveHover && (m_hovered != Action::None || m_nearLights);
         const bool showGlyphs = (config.glyphMode == GlyphMode::Always) || lightsHovered;
         // What the green dot's glyph is drawn from. `performAction` toggles on
         // exactly this test, so the mark and the click agree by construction
@@ -580,18 +649,24 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
         const QVector4D nativeRadii = w ? w->borderRadius().toVector() : QVector4D();
         const PanelWindowContour contour{window->frameGeometry().size(),
             {nativeRadii.x(), nativeRadii.y(), nativeRadii.z(), nativeRadii.w()}};
-        if (!config.cooperativeControls) {
+        if (!config.cooperativeControls && overlayMode != OverlayMode::Transparent) {
             auto backgroundClip = clip;
-            if (geometry.independentBackground && config.background == PanelBackground::Auto) {
-                const auto cached = m_cache.constFind(window);
-                if (cached != m_cache.constEnd() && cached->backgroundBottom >= 0) {
-                    QRectF backgroundBounds = transformedFrame;
-                    backgroundBounds.setHeight(cached->backgroundBottom * transform.yScale);
-                    backgroundClip = clippedToWindow(backgroundClip, viewport, backgroundBounds);
-                }
+            // Where the Auto background plate may reach this frame. For the
+            // independent cover the plate extends to the sampled title-bar
+            // bottom and needs the cache's own confirmation; otherwise
+            // drawnLocal has already been clipped to that bottom. The crop is
+            // painting only -- the layout the hit rects keep is unchanged.
+            if (!adjustingNow && overlayMode == OverlayMode::Cover
+                && (geometry.independentBackground
+                    ? confirmedBottom >= tintPanel.bottom()
+                    : confirmedBottom > drawnLocal.top())) {
+                QRectF backgroundBounds = transformedFrame;
+                backgroundBounds.setHeight(confirmedBottom * transform.yScale);
+                backgroundClip = clippedToWindow(backgroundClip, viewport, backgroundBounds);
             }
-            if (KWin::GLTexture *background = backgroundTexture(panelSize, scale, geometry, contour))
-                blit(viewport, backgroundClip, logicalRect, background, panelColor, sameFrameTint);
+            if (KWin::GLTexture *background = backgroundTexture(drawnPanelSize, scale, geometry, contour))
+                blit(viewport, backgroundClip, logicalRect, background, panelColor,
+                     sameFrameTint, true, transform.opacity, transform.brightness);
         }
         if (config.cooperativeControls) {
             for (int i = 0; i < TypeCount; ++i) {
@@ -605,12 +680,14 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
                 if (dotClip.isEmpty()) continue;
                 if (auto *texture = cooperativeTexture(dot.size(), scale, CooperativeSlotType[i], active,
                         hovered == actionFor(CooperativeSlotType[i]), maximized, showGlyphs))
-                    blit(viewport, dotClip, drawn, texture);
+                    blit(viewport, dotClip, drawn, texture, Qt::white, false, true,
+                         transform.opacity, transform.brightness);
             }
-        } else if (KWin::GLTexture *tex = panelTexture(panelSize, scale, active, dark,
+        } else if (KWin::GLTexture *tex = panelTexture(drawnPanelSize, scale, active, dark,
                                                 geometry, hovered, adjusting,
                                                 maximized, showGlyphs, contour)) {
-            blit(viewport, clip, logicalRect, tex, sameFrameTint ? panelColor : QColor(Qt::white), sameFrameTint, false);
+            blit(viewport, clip, logicalRect, tex, sameFrameTint ? panelColor : QColor(Qt::white),
+                 sameFrameTint, false, transform.opacity, transform.brightness);
         }
     }
 
@@ -625,7 +702,14 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
     if (!menuClip.isEmpty()) {
         const qreal scale = viewport.scale();
         if (KWin::GLTexture *menu = tileMenuTexture(scale, m_menu.dark, m_menu.hovered)) {
-            blit(viewport, menuClip, menuLogical, menu);
+            blit(viewport, menuClip, menuLogical, menu, Qt::white, false, true,
+                 transform.opacity, transform.brightness);
+        }
+    }
+    if (!adjustBarClip.isEmpty() && m_adjustBar.hasLayout) {
+        const qreal scale = viewport.scale();
+        if (KWin::GLTexture *bar = adjustBarTexture(scale, m_adjustBar.layout, m_adjustBar.state)) {
+            blit(viewport, adjustBarClip, adjustBarLogical, bar);
         }
     }
 }
@@ -633,7 +717,8 @@ void ButtonRenderer::paint(const KWin::RenderTarget &renderTarget,
 void ButtonRenderer::blit(const KWin::RenderViewport &viewport,
                           const KWin::Region &clip, const QRectF &logicalRect,
                           KWin::GLTexture *texture, const QColor &modulation,
-                          bool sameFrameTint, bool tintBackground)
+                          bool sameFrameTint, bool tintBackground,
+                          qreal opacity, qreal brightness)
 {
     if (!texture || clip.isEmpty()) {
         return;
@@ -674,10 +759,14 @@ void ButtonRenderer::blit(const KWin::RenderViewport &viewport,
         shader->setUniform("tintSampler", 1);
         shader->setUniform("tintBackground", int(tintBackground));
     }
-    const float alpha = modulation.alphaF();
+    const float effectiveOpacity = std::clamp(float(opacity), 0.0f, 1.0f);
+    const float effectiveBrightness = std::clamp(float(brightness), 0.0f, 1.0f);
+    const float alpha = modulation.alphaF() * effectiveOpacity;
     shader->setUniform(KWin::GLShader::Vec4Uniform::ModulationConstant,
-                       QVector4D(modulation.redF() * alpha, modulation.greenF() * alpha,
-                                 modulation.blueF() * alpha, alpha));
+                       QVector4D(modulation.redF() * effectiveBrightness * alpha,
+                                 modulation.greenF() * effectiveBrightness * alpha,
+                                 modulation.blueF() * effectiveBrightness * alpha,
+                                 alpha));
     shader->setUniform(KWin::GLShader::IntUniform::TextureWidth, texture->width());
     shader->setUniform(KWin::GLShader::IntUniform::TextureHeight, texture->height());
 
@@ -749,6 +838,14 @@ bool ButtonRenderer::tintFor(const KWin::RenderTarget &renderTarget,
                               bool *dark,
                               QColor *color)
 {
+    if (window->isMinimized() || window->isDeleted()) {
+        const auto existing = m_cache.constFind(window);
+        if (existing != m_cache.constEnd() && existing->known) {
+            *dark = existing->dark;
+            if (color) *color = existing->color;
+            return true;
+        }
+    }
     const bool isActive = (KWin::effects && KWin::effects->activeWindow() == window);
     const QSizeF windowSize = window->frameGeometry().size();
     const Clock::time_point now = Clock::now();
@@ -967,9 +1064,18 @@ void ButtonRenderer::setPendingGeometry(KWin::EffectWindow *window,
     // The panel that is on screen now has to be repainted as well as the one
     // that is about to be, or the draft leaves a copy of itself behind at every
     // step of a drag.
+    if (m_adjustBar.window == window && m_adjustBar.hasLayout) {
+        repaintRect(m_adjustBar.layout.rect);
+    }
     repaintRect(currentRect(window));
     m_pending[window] = draft;
-    repaintRect(panelRectFor(window, draft));
+    const QRectF nextPanel = panelRectFor(window, draft);
+    repaintRect(nextPanel);
+    if (m_adjusting.contains(window)) {
+        const AdjustOptions opts = m_adjustOptions.value(window);
+        repaintRect(adjustBarLayout(nextPanel, window->frameGeometry(),
+                                    opts.canToggleScope, opts.hasExistingRule).rect);
+    }
 }
 
 void ButtonRenderer::clearPendingGeometry(KWin::EffectWindow *window,
@@ -977,6 +1083,9 @@ void ButtonRenderer::clearPendingGeometry(KWin::EffectWindow *window,
 {
     if (!window || !m_pending.contains(window)) {
         return;
+    }
+    if (m_adjustBar.window == window && m_adjustBar.hasLayout) {
+        repaintRect(m_adjustBar.layout.rect);
     }
     repaintRect(panelRectFor(window, m_pending.value(window)));
     m_pending.remove(window);
@@ -1007,6 +1116,13 @@ void ButtonRenderer::setAdjusting(KWin::EffectWindow *window, bool adjusting)
         }
     } else {
         m_adjusting.remove(window);
+        m_adjustOptions.remove(window);
+        if (m_adjustBar.window == window) {
+            if (m_adjustBar.hasLayout) {
+                repaintRect(m_adjustBar.layout.rect);
+            }
+            m_adjustBar = AdjustBarCache{};
+        }
     }
     // The panel is drawn differently either way, and the texture is keyed on
     // which, so the whole rectangle has to be redrawn.
@@ -1016,6 +1132,80 @@ void ButtonRenderer::setAdjusting(KWin::EffectWindow *window, bool adjusting)
 bool ButtonRenderer::adjusting(KWin::EffectWindow *window) const
 {
     return m_adjusting.contains(window);
+}
+
+void ButtonRenderer::setAdjustOptions(KWin::EffectWindow *window,
+                                      OverlayMode mode,
+                                      MatchScope scope,
+                                      bool canToggleScope,
+                                      bool hasRole,
+                                      bool hasExistingRule)
+{
+    if (!window) {
+        return;
+    }
+    m_adjustOptions[window] = AdjustOptions{
+        mode, scope, canToggleScope, hasRole, hasExistingRule
+    };
+    if (m_adjustBar.window == window) {
+        m_adjustBar.state.mode = mode;
+        m_adjustBar.state.scope = scope;
+        m_adjustBar.state.canToggleScope = canToggleScope;
+        m_adjustBar.state.hasRole = hasRole;
+        m_adjustBar.state.hasExistingRule = hasExistingRule;
+        if (m_adjustBar.hasLayout) {
+            repaintRect(m_adjustBar.layout.rect);
+        }
+    } else {
+        const QRectF panel = currentRect(window);
+        if (!panel.isEmpty()) {
+            repaintRect(adjustBarLayout(panel, window->frameGeometry(),
+                                        canToggleScope, hasExistingRule).rect);
+        }
+    }
+    repaintRect(currentRect(window));
+}
+
+bool ButtonRenderer::adjustBarContains(const QPointF &logicalPos) const
+{
+    if (!m_adjustBar.window || !m_adjustBar.hasLayout
+        || !m_adjustBar.layout.rect.contains(logicalPos)) {
+        return false;
+    }
+    return exposedAt(m_adjustBar.window, logicalPos);
+}
+
+std::optional<AdjustAction> ButtonRenderer::adjustBarActionAt(const QPointF &logicalPos) const
+{
+    if (!adjustBarContains(logicalPos)) {
+        return std::nullopt;
+    }
+    return KOS::adjustBarActionAt(m_adjustBar.layout, logicalPos);
+}
+
+void ButtonRenderer::setAdjustBarHovered(const QPointF &logicalPos)
+{
+    if (!m_adjustBar.window || !m_adjustBar.hasLayout) {
+        return;
+    }
+    const std::optional<AdjustAction> hovered = adjustBarActionAt(logicalPos);
+    if (hovered == m_adjustBar.state.hovered) {
+        return;
+    }
+    m_adjustBar.state.hovered = hovered;
+    repaintRect(m_adjustBar.layout.rect);
+}
+
+KWin::GLTexture *ButtonRenderer::adjustBarTexture(qreal scale,
+                                                  const AdjustBarLayout &layout,
+                                                  const AdjustBarState &state)
+{
+    const QString key = adjustBarTextureKey(scale, layout, state);
+    const auto it = m_textures.find(key);
+    if (it != m_textures.end()) {
+        return it->second.get();
+    }
+    return cacheTexture(key, buildAdjustBar(scale, layout, state));
 }
 
 KWin::GLTexture *ButtonRenderer::backgroundTexture(const QSizeF &panelSize, qreal scale,
@@ -1172,6 +1362,22 @@ void ButtonRenderer::contentChanged(KWin::EffectWindow *window)
     // Client damage requests one refresh even for an inactive window. Keep
     // the last attempt time so video/scroll damage cannot bypass the budget.
     scheduleSample(window);
+}
+
+void ButtonRenderer::captionChanged(KWin::EffectWindow *window, const AppConfig &config)
+{
+    if (!window || m_adjusting.contains(window) || config.cooperativeControls) {
+        return;
+    }
+    const QRectF previous = currentRect(window).intersected(window->frameGeometry());
+    const QRectF next = config.showButtons ? panelRectFor(window, config.geometry) : QRectF();
+    if (sameSize(previous.size(), next.size())
+        && std::abs(previous.x() - next.x()) <= SizeTolerance
+        && std::abs(previous.y() - next.y()) <= SizeTolerance) {
+        return;
+    }
+    repaintRect(previous);
+    repaintRect(next);
 }
 
 int ButtonRenderer::zoomDotIndex()
@@ -1532,6 +1738,15 @@ ButtonRenderer::Action ButtonRenderer::hitTest(const QPointF &logicalPos,
             bool onButton = false;
             for (const auto &dot : hit.dots) onButton = onButton || dot.contains(logicalPos);
             if (!onButton) continue; // Transparent gaps remain the application's drag area.
+        } else if (hit.overlayMode == OverlayMode::Transparent
+                   && !m_adjusting.contains(w)) {
+            // Same principle for a transparent overlay without a plate: gaps
+            // between the lights stay the application's drag area. While the
+            // window is being adjusted the whole draft panel must stay
+            // grabbable, so the adjust session keeps the full interception.
+            bool onButton = false;
+            for (const auto &dot : hit.dots) onButton = onButton || dot.contains(logicalPos);
+            if (!onButton) continue;
         }
 
         if (window) {
@@ -1576,6 +1791,12 @@ void ButtonRenderer::syncHits(KWin::EffectWindow *window)
         m_menu.rect = tileMenuRect(it->panelRect, window->frameGeometry(),
             it->dots[zoomDotIndex()].center()).value_or(QRectF());
     }
+    if (m_adjustBar.window == window && m_adjustBar.hasLayout) {
+        m_adjustBar.layout.rect.translate(delta);
+        for (auto &button : m_adjustBar.layout.buttons) {
+            button.rect.translate(delta);
+        }
+    }
 }
 
 void ButtonRenderer::clearHits(KWin::EffectWindow *window, bool clearSource)
@@ -1606,12 +1827,16 @@ void ButtonRenderer::forget(KWin::EffectWindow *window)
     // is the only thing that could still be pointing at the pointer.
     m_pending.remove(window);
     m_adjusting.remove(window);
+    m_adjustOptions.remove(window);
 
     // The menu hangs from this window's panel, so it goes with it. Nothing is
     // repainted -- there is no window to repaint -- and the hit rects it was
     // tested against are gone with m_hits above.
     if (m_menu.window == window) {
         m_menu = TileMenuState{};
+    }
+    if (m_adjustBar.window == window) {
+        m_adjustBar = AdjustBarCache{};
     }
 
     // Critical: drop the hover reference too. Otherwise the next mouse move
@@ -1633,6 +1858,10 @@ void ButtonRenderer::invalidateAll()
     m_hovered = Action::None;
     m_insidePanel = false;
     m_nearLights = false;
+    if (m_adjustBar.window && m_adjustBar.hasLayout) {
+        repaintRect(m_adjustBar.layout.rect);
+    }
+    m_adjustBar.hasLayout = false;
     // m_pending and m_adjusting are deliberately kept: they belong to a session
     // that is still running, and reloading the configuration is not a reason to
     // throw away the panel the user is in the middle of positioning.
