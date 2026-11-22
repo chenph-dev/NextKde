@@ -67,7 +67,7 @@ def main():
             r'Cannot assign|Unable to assign|Binding loop|is not a type|is not a function', output), output
         count = re.search(r'CONTROL_CENTER_MODULES_PASS (\d+) checks', output).group(1)
         print(f'PASS: {count} checks: injected card services, Wi-Fi credential routing, shared volume preview/commit, '
-              'session confirmation cancellation, submenu navigation, close/reopen and Dock placement')
+              'session confirmation cancellation/execution, submenu navigation, close/reopen and Dock placement')
 
 
 if __name__ == '__main__':

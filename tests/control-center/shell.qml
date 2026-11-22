@@ -204,19 +204,39 @@ ShellRoot {
                 case 6:
                     if (center.pageProgress < 1) break
                     check(center.pendingConfirmAction === "poweroff", "session action waits for confirmation")
+                    // The confirmation is a modal, not a control-center page:
+                    // the session sheet must stay as the visible page behind it.
+                    check(center.requestedPage === "session",
+                          "confirmation does not request a separate page")
+                    check(center.displayedSubmenu === "session",
+                          "session sheet stays visible behind the confirmation")
                     let dialog = null
                     for (let i = 0; i < center.data.length; ++i) {
                         if (center.data[i].objectName === "control-center-session-confirmation")
                             dialog = center.data[i]
                     }
                     check(dialog !== null, "confirmation scope stays owned by the panel")
+                    check(dialog.requestedOpen, "confirmation dialog opens")
                     dialog.cancelRequested()
                     check(center.pendingConfirmAction === "" && center.isOpen, "cancel keeps panel open without executing action")
-                    center.close()
-                    center.toggle(anchorItem)
+                    center.runSessionAction("poweroff")
+                    check(center.pendingConfirmAction === "poweroff", "reopened confirmation targets the action")
+                    dialog.confirmRequested()
+                    check(center.pendingConfirmAction === "", "confirm clears the pending action")
+                    check(!center.isOpen, "confirm closes the control center")
                     test.step++
                     break
                 case 7:
+                    // The fixture has no platform daemon, so a successful send
+                    // is observable as the service's failure message.
+                    check(ControlCenterService.lastSessionError.length > 0,
+                          "confirm sends the session action to the platform daemon")
+                    check(!ControlCenterService.sessionActionInProgress,
+                          "session action request settles")
+                    center.toggle(anchorItem)
+                    test.step++
+                    break
+                case 8:
                     if (center.revealProgress < 1) break
                     check(center.displayedSubmenu === "" && center.isOpen, "reopening clears prior page identity")
                     center.close()
@@ -226,7 +246,7 @@ ShellRoot {
                     center.openSubmenu("sound")
                     test.step++
                     break
-                case 8:
+                case 9:
                     if (center.pageProgress < 1 || center.revealProgress < 1) break
                     check(center.displayedSubmenu === "sound" && center.dockFacingLayout,
                           "Dock-hosted panel retains submenu layout")

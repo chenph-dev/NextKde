@@ -67,8 +67,12 @@ PersistentPanelWindow {
     property alias logoutConfirmationVisible: panel.sessionModalVisible
     property string activeSubmenu: ""
     property bool submenuOpen: false
+    // The confirmation is a separate modal (SessionConfirmationDialog), not a
+    // page of the Control Center. Requesting a "confirm" page here unmapped the
+    // session sheet and left the panel on an empty page while the dialog tried
+    // to open, so the destructive actions appeared to do nothing.
     readonly property string requestedPage: sessionModalVisible
-        ? (pendingConfirmAction !== "" ? "confirm" : "session") : activeSubmenu
+        ? "session" : activeSubmenu
     readonly property string displayedSubmenu: pageMotion.displayedPage
     readonly property real revealProgress: popupMotion.progress
     readonly property real pageProgress: pageMotion.progress
