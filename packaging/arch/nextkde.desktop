@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=NextKDE (Wayland)
+Comment=NextKDE desktop shell on KDE Plasma 6
+Exec=/usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland
+TryExec=/usr/bin/startplasma-wayland
+DesktopNames=KDE;NextKDE;
+Type=Application

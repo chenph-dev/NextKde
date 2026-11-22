@@ -1,0 +1,31 @@
+[Unit]
+Description=NextKDE Quickshell desktop shell
+Requires=kos-platform.service
+Wants=kos-data.service
+After=graphical-session.target kos-platform.service kos-data.service
+# KDE marks graphical-session.target active before kwin_wayland has its
+# Wayland socket ready. Wait for the compositor before starting the shell.
+After=plasma-kwin_wayland.service
+# DeskCenter shares the desktop with Plasma's wallpaper/file surface; starting
+# after plasmashell keeps their initial stacking deterministic.
+After=plasma-plasmashell.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# Detached applications keep the launching cgroup; stop only the main qs
+# process so Dock-launched applications survive a shell restart.
+KillMode=process
+# The installed shell must be stable: kos-shell-init replaces the config tree.
+# A file watcher would hot-reload half-written QML.
+Environment=QS_DISABLE_FILE_WATCHER=1
+Environment=MALLOC_ARENA_MAX=2
+Environment=QML2_IMPORT_PATH=%h/.config/quickshell/kos:/usr/lib/qt6/qml
+ExecStartPre=/usr/bin/kos-shell-init
+ExecStart=/usr/bin/qs --no-duplicate -c kos
+ExecStartPost=/bin/sh -c '/usr/bin/qs -n -p %h/.config/quickshell/kos/splash >/dev/null 2>&1 &'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

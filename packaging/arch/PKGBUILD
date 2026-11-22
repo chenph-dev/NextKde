@@ -1,0 +1,207 @@
+# Maintainer: NextKDE contributors
+#
+# Arch package for the NextKDE shell. NextKDE is not a standalone desktop
+# environment: it runs as a user-space shell on top of a KDE Plasma 6 Wayland
+# session (KWin + plasma-workspace). This package installs the binaries, QML
+# trees, KWin plugins, systemd user units and the NextKDE session entry.
+#
+# This is a source package. It tracks NEXTKDE_SOURCE so a spin can pin a
+# release tag:
+#
+#   NEXTKDE_SOURCE="git+https://github.com/NextKde/NextKde.git#tag=v0.1.0" \
+#       makepkg -s
+#
+# The default main branch is for development. Builds and runtime acceptance
+# belong in a dedicated VM or CI, never on a maintainer workstation.
+#
+# For a local checkout, the source has to be committed first:
+#
+#   NEXTKDE_SOURCE="git+file://$PWD#branch=feat/desktop-groups" \
+#       makepkg -s --holdver
+
+pkgname=nextkde
+pkgver=0.1.0_dev
+pkgrel=1
+pkgdesc="NextKDE desktop shell for KDE Plasma 6"
+arch=('x86_64')
+url="https://github.com/NextKde/NextKde"
+license=('GPL-3.0-only')
+depends=(
+    'quickshell>=0.3.0'
+    'plasma-workspace'
+    'kwin>=6.6.0'
+    'kdecoration'
+    'qt6-base'
+    'qt6-declarative'
+    'qt6-svg'
+    'qt6-imageformats'
+    'qt6-5compat'
+    'qt6-wayland'
+    'kcoreaddons'
+    'kconfig'
+    'ki18n'
+    'kguiaddons'
+    'kcmutils'
+    'kwindowsystem'
+    'kiconthemes'
+    'kglobalaccel'
+    'kio'
+    'wayland'
+    'libxkbcommon'
+    'libxcb'
+    'libdrm'
+    'libgbm'
+    'libepoxy'
+    'vulkan-loader'
+    'flatpak'
+    'ostree'
+    'fcitx5'
+    'python'
+    'glib2'
+    'gnupg'
+)
+makedepends=(
+    'cmake'
+    'ninja'
+    'gcc'
+    'go'
+    'git'
+    'pkgconf'
+    'extra-cmake-modules'
+    'quickshell>=0.3.0'
+    'qt6-tools'
+    'wayland'
+    'wayland-protocols'
+    'vulkan-headers'
+    'libxkbcommon'
+    'libxcb'
+    'libdrm'
+    'libgbm'
+    'libepoxy'
+    'kcoreaddons'
+    'kconfig'
+    'ki18n'
+    'kguiaddons'
+    'kcmutils'
+    'kwindowsystem'
+    'kiconthemes'
+    'kglobalaccel'
+    'kio'
+    'kwin'
+    'kdecoration'
+    'plasma-workspace'
+    'flatpak'
+    'ostree'
+    'fcitx5'
+)
+optdepends=(
+    'wl-clipboard: clipboard file lists copied in another Wayland application'
+    'cliphist: clipboard history'
+    'flatpak: Flatpak application management in Settings'
+    'fcitx5: input method candidate panel'
+)
+provides=('kos-desktop')
+conflicts=('kos-desktop')
+
+_source=${NEXTKDE_SOURCE:-"git+https://github.com/NextKde/NextKde.git#branch=main"}
+source=("nextkde::$_source")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$pkgname"
+    local version
+    version=$(tr -d '\n' < VERSION)
+    printf '%s.%s' "${version//-/_}" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "$pkgname"
+
+    cmake -S . -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_SKIP_RPATH=ON \
+        -DBUILD_TESTING=OFF \
+        -DKOS_BUILD_SPATIAL=OFF \
+        -DKOS_FLATPAK_SUPPORT=AUTO
+    cmake --build build --parallel
+
+    # The Glass effect is a standalone KWin plugin with its own ECM setup.
+    cmake -S kwin/glass -B build-glass -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_SKIP_RPATH=ON
+    cmake --build build-glass --parallel
+}
+
+package() {
+    cd "$pkgname"
+
+    DESTDIR="$pkgdir" cmake --install build
+    DESTDIR="$pkgdir" cmake --install build-glass
+
+    # --- Shell and shared QML trees -----------------------------------------
+    # CMake deliberately has no install rules for these trees; the user-side
+    # deployer and the Nix installPhase own that file list. Install a
+    # dereferenced copy so the login sync never reads the checkout.
+    install -d "$pkgdir/usr/share/kos-desktop/shell"
+    cp -rL --no-preserve=ownership \
+        shell/shell.qml shell/desktop shell/Kos shell/shared shell/splash \
+        "$pkgdir/usr/share/kos-desktop/shell/"
+    # The login sync keys off the built package, not the source VERSION: a
+    # rebuilt package with the same upstream version must still refresh QML.
+    printf '%s-%s\n' "$pkgver" "$pkgrel" \
+        > "$pkgdir/usr/share/kos-desktop/BUILD_VERSION"
+
+    install -d "$pkgdir/usr/share/shared/qml" "$pkgdir/usr/share/shared/Icons"
+    cp -r shared/qml/. "$pkgdir/usr/share/shared/qml/"
+    cp -r shared/Icons/. "$pkgdir/usr/share/shared/Icons/"
+    rm -f "$pkgdir/usr/share/shared/Icons/CMakeLists.txt"
+    find "$pkgdir/usr/share/shared/qml" -maxdepth 1 \
+        \( -name CMakeLists.txt -o -name 'test_*.mjs' \) -delete
+
+    # --- Desktop entries -----------------------------------------------------
+    install -d "$pkgdir/usr/share/applications"
+    sed 's|^Exec=kos-settings$|Exec=/usr/bin/kos-settings|' \
+        packaging/desktop/kos-settings.desktop.in \
+        > "$pkgdir/usr/share/applications/kos-settings.desktop"
+    sed 's|@KOS_PLATFORM_EXEC@|/usr/libexec/kos-platform|' \
+        packaging/desktop/org.kos.Platform.desktop.in \
+        > "$pkgdir/usr/share/applications/org.kos.Platform.desktop"
+
+    local qs_exec
+    qs_exec=$(readlink -f "$(command -v qs)")
+    sed "s|@KOS_SHELL_EXEC@|$qs_exec|" \
+        packaging/desktop/org.kos.Shell.desktop.in \
+        > "$pkgdir/usr/share/applications/org.kos.Shell.desktop"
+
+    # --- Session entry, login sync and user units ---------------------------
+    install -Dm644 packaging/arch/nextkde.desktop \
+        "$pkgdir/usr/share/wayland-sessions/nextkde.desktop"
+    install -Dm755 packaging/arch/kos-shell-init \
+        "$pkgdir/usr/bin/kos-shell-init"
+
+    install -d "$pkgdir/usr/lib/systemd/user"
+    install -m644 packaging/arch/kos-platform.service \
+        packaging/arch/kos-data.service \
+        packaging/arch/kos-shell.service \
+        "$pkgdir/usr/lib/systemd/user/"
+
+    # Static wants keep the shell enabled for every user without a first-login
+    # `systemctl --user enable`. Mask the unit to opt out.
+    install -d "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants"
+    ln -s ../kos-platform.service \
+        "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/kos-platform.service"
+    ln -s ../kos-data.service \
+        "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/kos-data.service"
+    ln -s ../kos-shell.service \
+        "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/kos-shell.service"
+
+    # The data-service CMake rule also installs a unit under /usr/share; the
+    # user manager reads /usr/lib/systemd/user, so keep only the latter.
+    rm -f "$pkgdir/usr/share/systemd/user/kos-data.service"
+    rmdir --ignore-fail-on-non-empty "$pkgdir/usr/share/systemd/user" 2>/dev/null || true
+
+    install -Dm644 packaging/arch/README.md \
+        "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

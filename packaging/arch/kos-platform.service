@@ -1,0 +1,16 @@
+[Unit]
+Description=NextKDE platform integration service
+After=graphical-session.target plasma-kwin_wayland.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/kos-platform daemon
+Environment=KOS_PLATFORM_KWIN_SCRIPT=/usr/share/kos/platform/kwin/window-bridge.js
+Restart=on-failure
+RestartSec=2
+# Resident for the whole session; every event-loop thread holds an eventfd.
+LimitNOFILE=8192
+
+[Install]
+WantedBy=graphical-session.target

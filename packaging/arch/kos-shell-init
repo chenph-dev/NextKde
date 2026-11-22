@@ -1,0 +1,46 @@
+#!/bin/sh
+# Deploy the package-owned shell tree into the per-user Quickshell config
+# directory. Quickshell loads `-c kos` from ~/.config/quickshell/kos, so a
+# system package still needs this small per-user step.
+#
+# The marker keeps user edits and avoids copying the whole tree on every start;
+# a package upgrade changes VERSION and triggers a refresh. User state lives
+# under $XDG_STATE_HOME/quickshell/kos, not in this tree.
+set -eu
+
+version_file=/usr/share/kos-desktop/BUILD_VERSION
+shell_source=/usr/share/kos-desktop/shell
+shared_source=/usr/share/shared
+config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/kos
+marker="$config_dir/.nextkde-version"
+
+[ -f "$shell_source/shell.qml" ] || {
+    echo "kos-shell-init: missing $shell_source/shell.qml" >&2
+    exit 1
+}
+[ -f "$version_file" ] || {
+    echo "kos-shell-init: missing $version_file" >&2
+    exit 1
+}
+version=$(cat "$version_file")
+
+if [ -f "$marker" ] && [ "$(cat "$marker")" = "$version" ]; then
+    exit 0
+fi
+
+# Replace the managed QML tree rather than overlaying versions. Preserve
+# nothing here: preferences and history are under XDG_STATE_HOME.
+if [ -e "$config_dir" ] || [ -L "$config_dir" ]; then
+    find "$config_dir" -type d -exec chmod u+w {} + 2>/dev/null || true
+    find "$config_dir" -type f -exec chmod u+w {} + 2>/dev/null || true
+    rm -rf "$config_dir"
+fi
+
+install -d "$config_dir/shared/qml" "$config_dir/Kos"
+cp -rL "$shell_source/." "$config_dir/"
+cp -rL "$shared_source/qml/." "$config_dir/shared/qml/"
+rm -rf "$config_dir/shared/Icons" "$config_dir/Kos/Icons"
+cp -rL "$shared_source/Icons" "$config_dir/shared/Icons"
+ln -s ../shared/Icons "$config_dir/Kos/Icons"
+
+printf '%s\n' "$version" > "$marker"

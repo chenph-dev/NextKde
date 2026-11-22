@@ -1,6 +1,11 @@
 # Packaging
 
-Packaging contains files that are copied or rendered by `tools/kosctl`:
+`arch/` contains the first system-package and session integration for an
+Arch-based NextKDE spin (PKGBUILD, Wayland session entry, systemd user units and
+the per-login QML sync). See `arch/README.md` for its scope, build steps, VM
+acceptance checklist and the remaining ISO/Calamares work.
+
+The files below are copied or rendered by `tools/kosctl`:
 
 - `systemd/kos-platform.service`, `systemd/kos-data.service`, and
   `systemd/kos-shell.service.in` are user units installed to
