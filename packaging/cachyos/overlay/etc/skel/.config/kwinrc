@@ -1,0 +1,9 @@
+[Plugins]
+blurEnabled=false
+kos_bridgeEnabled=true
+kos_dock_window_animationEnabled=true
+kos_context_menu_inputEnabled=true
+glassEnabled=true
+
+[org.kde.kdecoration2]
+library=kos_decoration

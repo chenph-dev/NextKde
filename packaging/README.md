@@ -5,6 +5,11 @@ Arch-based NextKDE spin (PKGBUILD, Wayland session entry, systemd user units and
 the per-login QML sync). See `arch/README.md` for its scope, build steps, VM
 acceptance checklist and the remaining ISO/Calamares work.
 
+`cachyos/` layers that package and session onto the pinned CachyOS live-ISO
+profile: it adds the `nextkde` archiso profile, a pacman repository, live and
+installed session defaults, and the Calamares package/shellprocess patches that
+produce an installable ISO. See `cachyos/README.md`.
+
 The files below are copied or rendered by `tools/kosctl`:
 
 - `systemd/kos-platform.service`, `systemd/kos-data.service`, and
